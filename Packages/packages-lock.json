@@ -15,9 +15,7 @@
       "version": "file:com.prototyper.openai-editor-tool",
       "depth": 0,
       "source": "embedded",
-      "dependencies": {
-        "com.openai.unity": ""
-      }
+      "dependencies": {}
     },
     "com.prototyper.packagehelper": {
       "version": "0.3.1",

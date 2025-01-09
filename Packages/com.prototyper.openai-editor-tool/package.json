@@ -1,6 +1,6 @@
 {
   "name": "com.prototyper.openai-editor-tool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "displayName": "OpenAI Editor Tool",
   "description": "OpenAI-Editor-Tool",
   "unity": null,
@@ -8,9 +8,7 @@
   "documentationUrl": "",
   "changelogUrl": "",
   "licensesUrl": "",
-  "dependencies": {
-    "com.openai.unity": ""
-  },
+  "dependencies": {},
   "keywords": [
     "unity"
   ],
