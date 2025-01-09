@@ -1,0 +1,53 @@
+name: Create Release from Tag
+
+on:
+  push:
+    tags:
+      - '*'  # Trigger on any tag push
+
+jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Tag Name
+        id: check_tag
+        run: |
+          TAG_NAME=${GITHUB_REF##*/}
+          echo "Tag Name: $TAG_NAME"
+          if [[ "$TAG_NAME" == *"-v"* ]]; then
+            echo "is_version_tag=true" >> $GITHUB_ENV
+            # Package name
+            PACKAGE_NAME=$(echo "${TAG_NAME}" | awk -F '-v' '{print $1}')
+            # Working directory
+            echo "WORKING_DIR=Packages/com.prototyper.${PACKAGE_NAME}" >> $GITHUB_ENV
+          else
+            echo "is_version_tag=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create Release
+        if: env.is_version_tag == 'true'
+        uses: ncipollo/release-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          draft: false
+          prerelease: false
+          generateReleaseNotes: true
+          makeLatest: false
+      - name: Checkout code
+        if: env.is_version_tag == 'true'
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Setup node
+        if: env.is_version_tag == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org/
+      - name: NPM publish
+        if: env.is_version_tag == 'true'
+        run: npm publish
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.npm_token}}
