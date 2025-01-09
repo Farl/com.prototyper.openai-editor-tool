@@ -1,0 +1,31 @@
+{
+  "name": "com.prototyper.openai-editor-tool",
+  "version": "0.1.0",
+  "displayName": "OpenAI Editor Tool",
+  "description": "OpenAI-Editor-Tool",
+  "unity": null,
+  "unityRelease": null,
+  "documentationUrl": "",
+  "changelogUrl": "",
+  "licensesUrl": "",
+  "dependencies": {
+    "com.openai.unity": ""
+  },
+  "keywords": [
+    "unity"
+  ],
+  "author": {
+    "name": "Farl Lee",
+    "email": "spring_snow@hotmail.com",
+    "url": "https://github.com/Farl"
+  },
+  "hideInEditor": false,
+  "license": "GPL-3.0",
+  "samples": [],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Farl/com.prototyper.openai-editor-tool",
+    "revision": ""
+  },
+  "hideFlags": 0
+}
