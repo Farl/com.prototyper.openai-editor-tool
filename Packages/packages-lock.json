@@ -15,7 +15,9 @@
       "version": "file:com.prototyper.openai-editor-tool",
       "depth": 0,
       "source": "embedded",
-      "dependencies": {}
+      "dependencies": {
+        "com.unity.nuget.newtonsoft-json": ""
+      }
     },
     "com.prototyper.packagehelper": {
       "version": "0.3.1",
@@ -129,7 +131,7 @@
     },
     "com.unity.nuget.newtonsoft-json": {
       "version": "3.2.1",
-      "depth": 1,
+      "depth": 0,
       "source": "registry",
       "dependencies": {},
       "url": "https://packages.unity.com"

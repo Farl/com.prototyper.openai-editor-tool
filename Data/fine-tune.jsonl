@@ -1,0 +1,3 @@
+{"messages":[{"role":"system","content":"A"},{"role":"user","content":"B","weight":1.0},{"role":"assistant","content":"C","weight":1.0}]}
+{"messages":[{"role":"system","content":"S"},{"role":"user","content":"E","weight":1.0},{"role":"assistant","content":"F","weight":1.0}]}
+{"messages":[{"role":"system","content":"D"},{"role":"user","content":"G","weight":1.0},{"role":"assistant","content":"ZH","weight":1.0}]}

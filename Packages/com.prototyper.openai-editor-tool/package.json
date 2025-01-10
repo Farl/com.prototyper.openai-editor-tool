@@ -1,6 +1,6 @@
 {
   "name": "com.prototyper.openai-editor-tool",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "displayName": "OpenAI Editor Tool",
   "description": "OpenAI-Editor-Tool",
   "unity": null,
@@ -8,7 +8,9 @@
   "documentationUrl": "",
   "changelogUrl": "",
   "licensesUrl": "",
-  "dependencies": {},
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": ""
+  },
   "keywords": [
     "unity"
   ],

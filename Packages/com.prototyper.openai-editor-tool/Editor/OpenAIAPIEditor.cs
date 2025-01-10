@@ -22,12 +22,21 @@ using Utilities.WebRequestRest;
 // IServerSentEvent
 using Utilities.WebRequestRest.Interfaces;
 
+using Newtonsoft.Json;
+using PlasticGui.WebApi.Responses;
+
 namespace SS
 {
     public class OpenAIAPIEditor : EditorWindow
     {
 
         #region General
+
+        private enum MessageRole
+        {
+            Assistant = 2,
+            User = 3,
+        }
 
         private enum Page
         {
@@ -818,7 +827,10 @@ namespace SS
         private string threadId;
         private string apiKey;
         private string assistantId;
+        private MessageRole msgRole = MessageRole.User;
         private string textPrompt;
+        private string prefix;
+        private string postfix;
         private Vector2 sideBarScrollPosition;
         private Vector2 messageScrollPosition;
         private AssistantResponse currentAssistant = null;
@@ -887,12 +899,19 @@ namespace SS
             EditorGUILayout.BeginVertical();
             {
                 // Send
+                msgRole = (MessageRole)EditorGUILayout.EnumPopup("Role", msgRole);
+                prefix = EditorGUILayout.TextField("Prefix", prefix);
+                textPrompt = EditorGUILayout.TextArea(textPrompt);
+                postfix = EditorGUILayout.TextField("Postfix", postfix);
                 EditorGUILayout.BeginHorizontal();
                 {
-                    textPrompt = EditorGUILayout.TextArea(textPrompt);
                     if (GUILayout.Button("Send", GUILayout.Width(100)))
                     {
-                        SendMessage(cancellationTokenSource.Token).Forget();
+                        SendMessage(doRun: true, cancellationTokenSource.Token).Forget();
+                    }
+                    if (GUILayout.Button("Send w/o Run", GUILayout.Width(100)))
+                    {
+                        SendMessage(doRun: false, cancellationTokenSource.Token).Forget();
                     }
                 }
                 EditorGUILayout.EndHorizontal();
@@ -1024,47 +1043,61 @@ namespace SS
             SaveThreadsFile();
             this.Repaint();
         }
-        private async Task SendMessage(CancellationToken cancellationToken)
+
+        private async Task CreateRun(Action<MessageResponse> onMsgCompleted, CancellationToken cancellationToken)
         {
-            if (client == null || client.HasValidAuthentication == false)
-            {
-                LogError("Invalid client");
-                return;
-            }
-            if (string.IsNullOrEmpty(threadId))
-            {
-                LogError("Thread ID is required");
-                return;
-            }
-            if (currentThread == null)
-            {
-                LogError("No thread selected");
-                return;
-            }
-            if (string.IsNullOrEmpty(textPrompt))
-            {
-                LogError("Text Prompt is required");
-                return;
-            }
-
-            MessageResponse response = null;
-            try
-            {
-                response = await currentThread.CreateMessageAsync(
-                    new Message(textPrompt, Role.User), cancellationToken: cancellationToken);
-                messages.Insert(0, response);
-                this.Repaint();
-            }
-            catch (Exception e)
-            {
-                LogException(e);
-            }
-
-            // Run
+            // Create Run
             var createRunRequest = new CreateRunRequest(assistantId: assistantId);
             try
             {
-                currentRun = await currentThread.CreateRunAsync(createRunRequest, cancellationToken: cancellationToken);
+                MessageResponse newMsgRes = null;
+                currentRun = await currentThread.CreateRunAsync(
+                    createRunRequest,
+                    streamEventHandler: async (streamEvent) =>
+                    {
+                        try
+                        {
+                            // Log event type
+                            //Log($"Event type = <color=green>{streamEvent.GetType().Name}</color>");
+
+                            switch (streamEvent)
+                            {
+                                case MessageResponse message:
+                                    switch (message.Status)
+                                    {
+                                        case MessageStatus.InProgress:
+                                            if (newMsgRes != message)
+                                            {
+                                                newMsgRes = message;
+                                                messages.Insert(0, message);
+                                            }
+                                            else
+                                            {
+                                                messages[0] = message;
+                                            }
+                                            this.Repaint();
+                                            break;
+                                        case MessageStatus.Completed:
+                                            messages[0] = message;
+                                            onMsgCompleted?.Invoke(message);
+                                            this.Repaint();
+                                            break;
+                                    }
+                                    break;
+                                case RunResponse run:
+                                    break;
+                                case Error error:
+                                    throw error.Exception ?? new Exception(error.Message);
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            LogException(e);
+                        }
+                        await Task.CompletedTask;
+                    },
+                    cancellationToken: cancellationToken
+                );
             }
             catch (Exception e)
             {
@@ -1106,7 +1139,7 @@ namespace SS
                 await Task.Delay(1000);
                 try
                 {
-                    currentRun = await currentThread.RetrieveRunAsync(currentRun.Id);
+                    currentRun = await currentThread.RetrieveRunAsync(currentRun.Id, cancellationToken);
                 }
                 catch (SystemException e)
                 {
@@ -1118,16 +1151,18 @@ namespace SS
             Log($"Run ID = <color=yellow>{currentRun.Id}</color>, Status = <color=yellow>{currentRun.Status}</color>");
 
             currentRun = null;
+        }
 
+        private async Task ListMessage(string before, CancellationToken cancellationToken)
+        {
             // Get message (only latest than response)
-            var before = response.Id;
             ListResponse<MessageResponse> latestMessages = null;
             do
             {
                 try
                 {
                     var listQuery = new ListQuery(limit: 20, order: SortOrder.Descending, before: before);
-                    latestMessages = await currentThread.ListMessagesAsync(listQuery);
+                    latestMessages = await currentThread.ListMessagesAsync(listQuery, cancellationToken);
                     foreach (var message in latestMessages.Items)
                     {
                         messages.Insert(0, message);
@@ -1145,6 +1180,54 @@ namespace SS
             } while (latestMessages.HasMore);
 
             this.Repaint();
+        }
+
+        private async Task SendMessage(bool doRun, CancellationToken cancellationToken)
+        {
+            if (client == null || client.HasValidAuthentication == false)
+            {
+                LogError("Invalid client");
+                return;
+            }
+            if (string.IsNullOrEmpty(threadId))
+            {
+                LogError("Thread ID is required");
+                return;
+            }
+            if (currentThread == null)
+            {
+                LogError("No thread selected");
+                return;
+            }
+            if (string.IsNullOrEmpty(textPrompt))
+            {
+                LogError("Text Prompt is required");
+                return;
+            }
+
+            // Create message
+            MessageResponse response = null;
+            try
+            {
+                response = await currentThread.CreateMessageAsync(
+                    new Message($"{prefix}{textPrompt}{postfix}", (OpenAI.Role)msgRole), cancellationToken: cancellationToken);
+                messages.Insert(0, response);
+                this.Repaint();
+            }
+            catch (Exception e)
+            {
+                LogException(e);
+            }
+
+            if (doRun == false)
+            {
+                return;
+            }
+            // Set before to the latest message
+            var before = response.Id;
+
+            await CreateRun((msg) => { before = msg.Id; }, cancellationToken);
+            await ListMessage(before, cancellationToken);
         }
         private async Task GetMessageList(CancellationToken cancellationToken)
         {
@@ -1791,68 +1874,69 @@ namespace SS
                 this.response = response;
             }
         }
-        private class FineTuneMessage
-        {
-            public Role role;
-            public string content;
-            [Range(0, 1)]
-            public float weight;
-        }
-        private class FineTuneDataSet
-        {
-            public List<FineTuneMessage> messages;
-        }
-        private FineTuneDataSet fineTuneDataSet = new FineTuneDataSet();
-        private List<FineTuneMessage> fineTuneMessages = new List<FineTuneMessage>();
+        private List<FineTuneDataSet> fineTuneDataSet = new List<FineTuneDataSet>();
 
         private void OnDrawFineTune()
         {
             // Create fine-tune jsonl file
 
-            // Fine-tune jsonl file editor (A list of fine-tune messages)
-            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Open Jsonl"))
             {
-                EditorGUILayout.BeginVertical();
+                var path = EditorUtility.OpenFilePanel("Open Jsonl", "", "jsonl");
+                if (!string.IsNullOrEmpty(path))
                 {
-                    FineTuneMessage removeMessage = null;
-                    foreach (var message in fineTuneMessages)
+                    using (var reader = new StreamReader(path))
                     {
-                        EditorGUILayout.BeginHorizontal();
+                        // Read each line as a json file (jsonl)
+                        fineTuneDataSet.Clear();
+                        while (!reader.EndOfStream)
                         {
-                            message.role = (Role)EditorGUILayout.EnumPopup(message.role, GUILayout.Width(100));
-                            message.content = EditorGUILayout.TextArea(message.content);
-                            message.weight = EditorGUILayout.Slider(message.weight, 0f, 1f, GUILayout.Width(100));
-                            if (GUILayout.Button("x", GUILayout.Width(20)))
-                            {
-                                removeMessage = message;
-                            }
+                            var line = reader.ReadLine();
+                            var dataset = JsonConvert.DeserializeObject<FineTuneDataSet>(line);
+                            fineTuneDataSet.Add(dataset);
                         }
-                        EditorGUILayout.EndHorizontal();
                     }
-                    if (removeMessage != null)
-                    {
-                        fineTuneMessages.Remove(removeMessage);
-                    }
-                }
-                EditorGUILayout.EndVertical();
-                if (GUILayout.Button("Add Message", GUILayout.Width(100)))
-                {
-                    fineTuneMessages.Add(new FineTuneMessage());
                 }
             }
-            EditorGUILayout.EndHorizontal();
+
+            // Fine-tune jsonl file editor (A list of fine-tune messages)
+            
+            if (fineTuneDataSet != null)
+            {
+                var index = 0;
+                var removeIndex = -1;
+                foreach (var fineTuneData in fineTuneDataSet)
+                {
+                    EditorGUILayout.LabelField($"Fine-Tune Data {index}");
+                    DrawFineTuneData(fineTuneData);
+                    if (GUILayout.Button("Remove Data Set"))
+                    {
+                        removeIndex = index;
+                    }
+                    index++;
+                }
+                if (removeIndex >= 0)
+                {
+                    fineTuneDataSet.RemoveAt(removeIndex);
+                }
+                // Add data set button
+                if (GUILayout.Button("Add Data Set"))
+                {
+                    fineTuneDataSet.Add(new FineTuneDataSet());
+                }
+            }
             
             // Save Jsonl file
             if (GUILayout.Button("Save Jsonl"))
             {
-                var path = EditorUtility.SaveFilePanel("Save Jsonl", "", "fine-tune.jsonl", "jsonl");
-                if (!string.IsNullOrEmpty(path))
+                var path = EditorUtility.SaveFilePanel("Save Jsonl", "", "fine-tune", "jsonl");
+                if (!string.IsNullOrEmpty(path) && fineTuneDataSet != null)
                 {
                     using (var writer = new StreamWriter(path))
                     {
-                        foreach (var message in fineTuneMessages)
+                        foreach (var dataset in fineTuneDataSet)
                         {
-                            writer.WriteLine(JsonUtility.ToJson(message));
+                            writer.WriteLine(JsonConvert.SerializeObject(dataset, Formatting.None));
                         }
                     }
                 }
@@ -1887,6 +1971,73 @@ namespace SS
             EditorGUILayout.BeginHorizontal();
             {
                 if (GUILayout.Button("List Fine-Tune"))
+                {
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawFineTuneData(FineTuneDataSet fineTuneDataSet)
+        {
+            if (fineTuneDataSet.messages == null)
+            {
+                fineTuneDataSet.messages = new List<FineTuneMessage>();
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            {
+                EditorGUI.BeginChangeCheck();
+                EditorGUILayout.BeginVertical();
+                {
+                    FineTuneMessage removeMessage = null;
+                    if (fineTuneDataSet.messages != null)
+                    {
+                        foreach (var message in fineTuneDataSet.messages)
+                        {
+                            EditorGUILayout.BeginHorizontal();
+                            {
+                                if (!Enum.TryParse(message.role, ignoreCase: true, out Role role))
+                                {
+                                    // To lower case
+                                    role = Role.System;
+                                    message.role = role.ToString().ToLower();
+                                }
+                                var newRole = (Role)EditorGUILayout.EnumPopup(role, GUILayout.Width(100));
+                                if (newRole != role)
+                                {
+                                    message.role = newRole.ToString().ToLower();
+                                }
+                                message.content = EditorGUILayout.TextArea(message.content);
+                                if (message.weight != null)
+                                {
+                                    message.weight = EditorGUILayout.Slider((float)message.weight, 0f, 1f, GUILayout.Width(200));
+                                }
+                                else
+                                {
+                                    if (GUILayout.Button("Add Weight", GUILayout.Width(100)))
+                                    {
+                                        message.weight = 1f;
+                                    }
+                                }
+                                if (GUILayout.Button("x", GUILayout.Width(20)))
+                                {
+                                    removeMessage = message;
+                                }
+                            }
+                            EditorGUILayout.EndHorizontal();
+                        }
+                    }
+                    if (removeMessage != null)
+                    {
+                        fineTuneDataSet.messages.Remove(removeMessage);
+                    }
+                }
+                EditorGUILayout.EndVertical();
+                if (GUILayout.Button("Add Message", GUILayout.Width(100)))
+                {
+                    fineTuneDataSet.messages.Add(new FineTuneMessage());
+                }
+                if (EditorGUI.EndChangeCheck())
                 {
                 }
             }
