@@ -1,0 +1,2 @@
+{"messages":[{"role":"system","content":"A"},{"role":"user","content":"B","weight":1.0},{"role":"assistant","content":"C","weight":1.0}]}
+{"messages":[{"role":"system","content":"D"},{"role":"user","content":"E"},{"role":"assistant","content":"F"}]}

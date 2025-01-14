@@ -23,7 +23,6 @@ using Utilities.WebRequestRest;
 using Utilities.WebRequestRest.Interfaces;
 
 using Newtonsoft.Json;
-using PlasticGui.WebApi.Responses;
 
 namespace SS
 {
@@ -65,17 +64,21 @@ namespace SS
             {
                 apiKey = EditorGUILayout.PasswordField("API Key", apiKey, GUILayout.Width(300));
                 var backupGUIEnabled = GUI.enabled;
+
                 GUI.enabled = client == null || client.HasValidAuthentication == false;
                 if (GUILayout.Button("Connect", GUILayout.Width(100)))
                 {
                     cancellationTokenSource = new CancellationTokenSource();
                     Connect();
+                    GUI.FocusControl(null);
                 }
+
                 GUI.enabled = !GUI.enabled;
                 if (GUILayout.Button("Disconnect", GUILayout.Width(100)))
                 {
                     client = null;
                     cancellationTokenSource?.Cancel();
+                    GUI.FocusControl(null);
                 }
                 GUI.enabled = backupGUIEnabled;
             }
@@ -406,6 +409,18 @@ namespace SS
                         EditorGUILayout.LabelField(file.fileResponse.Purpose, GUILayout.Width(100));
                         // Size need thousand separator without floating point
                         EditorGUILayout.LabelField($"{file.fileResponse.Size:N0}", GUILayout.Width(100));
+
+                        if (file.fileResponse.Purpose != "assistants")
+                        {
+                            if (GUILayout.Button("Download", GUILayout.Width(100)))
+                            {
+                                DownloadFileAsync(file.fileResponse, cancellationTokenSource.Token).Forget();
+                            }
+                        }
+                        else
+                        {
+                            EditorGUILayout.LabelField("", GUILayout.Width(100));
+                        }
                         if (GUILayout.Button("Delete", GUILayout.Width(100)))
                         {
                             DeleteFile(file.fileResponse.Id, cancellationTokenSource.Token).Forget();
@@ -625,7 +640,37 @@ namespace SS
                 }
             } while (response.HasMore);
         }
+        private async Task DownloadFileAsync(FileResponse fileResponse, CancellationToken cancellationToken)
+        {
+            if (client == null || client.HasValidAuthentication == false)
+            {
+                LogError("Invalid client");
+                return;
+            }
+            try
+            {
+                // Get file bytes
+                var bytes = await client.FilesEndpoint.DownloadFileBytesAsync(fileResponse.Id, progress: null, cancellationToken);
 
+                if (fileResponse.Purpose == "fine-tune-results")
+                {
+                    // Convert response to string
+                    var responseString = Encoding.UTF8.GetString(bytes);
+                    // Decode base64 string (responseString)
+                    bytes = Convert.FromBase64String(responseString);
+                }
+                
+                var path = EditorUtility.SaveFilePanel("Save File", "", fileResponse.FileName, "");
+                if (!string.IsNullOrEmpty(path))
+                {
+                    File.WriteAllBytes(path, bytes);
+                }
+            }
+            catch (Exception e)
+            {
+                LogException(e);
+            }
+        }
         private async Task DeleteFile(string fileId, CancellationToken cancellationToken)
         {
             if (client == null || client.HasValidAuthentication == false)
@@ -659,6 +704,7 @@ namespace SS
                 {
                     files.Add(new FileData(file));
                 }
+                this.Repaint();
             }
             catch (Exception e)
             {
@@ -1370,9 +1416,34 @@ namespace SS
         #endregion
 
         #region Models
-        private List<string> modelList = new List<string>();
-        
-        private async Task GetModels(CancellationToken cancellationToken)
+        private class ModelData
+        {
+            public string Id;
+            public string OwnedBy;
+            public bool AllowFineTuning;
+            public string OrganizationId;
+            public ModelData(Model model)
+            {
+                Id = model.Id;
+                OwnedBy = model.OwnedBy;
+                if (model.Permissions != null)
+                {
+                    foreach (var permission in model.Permissions)
+                    {
+                        if (permission.AllowFineTuning)
+                        {
+                            AllowFineTuning = true;
+                        }
+                        OrganizationId = permission.Organization;
+                    }
+                }
+            }
+        }
+        private List<ModelData> modelList = new List<ModelData>();
+        private List<string> modelNameList = new List<string>();
+        private int selectedModelIndex = -1;
+
+        private async Task GetModels(bool filterFineTune, CancellationToken cancellationToken)
         {
             if (client == null || client.HasValidAuthentication == false)
             {
@@ -1385,8 +1456,15 @@ namespace SS
                 modelList.Clear();
                 foreach (var model in response)
                 {
-                    modelList.Add(model.Id);
+                    var newModel = new ModelData(model);
+                    if (filterFineTune && newModel.AllowFineTuning == false)
+                    {
+                        continue;
+                    }
+                    modelList.Add(newModel);
                 }
+                modelNameList = modelList.Select(model => $"{model.Id} ({model.OwnedBy})").ToList();
+                this.Repaint();
             }
             catch (Exception e)
             {
@@ -1395,18 +1473,17 @@ namespace SS
         }
 
         // Popup window to pick model
-        private int selectedModelIndex = -1;
-        private void OnDrawModelPopup()
+        private void OnDrawModelPopup(List<string> modelIdList, bool filterFineTune, ref int selectIndex)
         {
             EditorGUILayout.BeginHorizontal();
             {
                 if (modelList.Count > 0)
                 {
-                    selectedModelIndex = EditorGUILayout.Popup("Model", selectedModelIndex, modelList.ToArray());
+                    selectIndex = EditorGUILayout.Popup("Model", selectIndex, modelIdList.ToArray());
                 }
                 if (GUILayout.Button("List Models", GUILayout.Width(100)))
                 {
-                    GetModels(cancellationTokenSource.Token).Forget();
+                    GetModels(filterFineTune, cancellationTokenSource.Token).Forget();
                 }
             }
             EditorGUILayout.EndHorizontal();
@@ -1595,14 +1672,14 @@ namespace SS
                 {
                     createAssistantName = EditorGUILayout.TextField("Name", createAssistantName);
                     createAssistantInstructions = EditorGUILayout.TextField("Instructions", createAssistantInstructions);
-                    OnDrawModelPopup();
+                    OnDrawModelPopup(modelNameList, filterFineTune: false, ref selectedModelIndex);
                 }
                 EditorGUILayout.EndVertical();
                 if (selectedModelIndex >= 0)
                 {
                     if (GUILayout.Button("Create Assistant"))
                     {
-                        createAssistantModel = modelList[selectedModelIndex];
+                        createAssistantModel = modelList[selectedModelIndex].Id;
                         // Create assistant
                         CreateAssistant(createAssistantName, createAssistantInstructions, createAssistantModel, cancellationToken: cancellationTokenSource.Token).Forget();
                     }
@@ -1864,117 +1941,207 @@ namespace SS
         #endregion
 
         #region Fine-Tune
-        
+
+        // https://platform.openai.com/docs/guides/fine-tuning
+        private string[] fineTuneBaseModels = new string[]
+        {
+            "gpt-4o-2024-08-06",
+            "gpt-4o-mini-2024-07-18",
+            "gpt-4-0613",
+            "gpt-3.5-turbo-0125",
+            "gpt-3.5-turbo-1106",
+            "gpt-3.5-turbo-0613"
+        };
+
         private class FineTuneData
         {
             public string Id => response.Id;
             public FineTuneJobResponse response;
+            public Error error;
             public FineTuneData(FineTuneJobResponse response)
             {
                 this.response = response;
             }
         }
+        private int fineTuneModelIndex = 0;
+        private Vector2 fineTuneDataSetScrollPosition;
+        private Vector2 fineTuneListScrollPosition;
+        private float fineTuneViewHeight = 200;
+        private bool isDraggingBarFineTune = false;
+        private string fineTuneModel;
+        private string fineTuneTrainingFileId;
+        private string fineTuneValidationFileId;
         private List<FineTuneDataSet> fineTuneDataSet = new List<FineTuneDataSet>();
+        private List<FineTuneData> fineTuneDatas = new List<FineTuneData>();
 
-        private void OnDrawFineTune()
+        private void DrawFineTuneDataSet(float viewHeight = -1)
         {
             // Create fine-tune jsonl file
-
-            if (GUILayout.Button("Open Jsonl"))
-            {
-                var path = EditorUtility.OpenFilePanel("Open Jsonl", "", "jsonl");
-                if (!string.IsNullOrEmpty(path))
-                {
-                    using (var reader = new StreamReader(path))
-                    {
-                        // Read each line as a json file (jsonl)
-                        fineTuneDataSet.Clear();
-                        while (!reader.EndOfStream)
-                        {
-                            var line = reader.ReadLine();
-                            var dataset = JsonConvert.DeserializeObject<FineTuneDataSet>(line);
-                            fineTuneDataSet.Add(dataset);
-                        }
-                    }
-                }
-            }
-
-            // Fine-tune jsonl file editor (A list of fine-tune messages)
-            
-            if (fineTuneDataSet != null)
-            {
-                var index = 0;
-                var removeIndex = -1;
-                foreach (var fineTuneData in fineTuneDataSet)
-                {
-                    EditorGUILayout.LabelField($"Fine-Tune Data {index}");
-                    DrawFineTuneData(fineTuneData);
-                    if (GUILayout.Button("Remove Data Set"))
-                    {
-                        removeIndex = index;
-                    }
-                    index++;
-                }
-                if (removeIndex >= 0)
-                {
-                    fineTuneDataSet.RemoveAt(removeIndex);
-                }
-                // Add data set button
-                if (GUILayout.Button("Add Data Set"))
-                {
-                    fineTuneDataSet.Add(new FineTuneDataSet());
-                }
-            }
-            
-            // Save Jsonl file
-            if (GUILayout.Button("Save Jsonl"))
-            {
-                var path = EditorUtility.SaveFilePanel("Save Jsonl", "", "fine-tune", "jsonl");
-                if (!string.IsNullOrEmpty(path) && fineTuneDataSet != null)
-                {
-                    using (var writer = new StreamWriter(path))
-                    {
-                        foreach (var dataset in fineTuneDataSet)
-                        {
-                            writer.WriteLine(JsonConvert.SerializeObject(dataset, Formatting.None));
-                        }
-                    }
-                }
-            }
-
-            // Create fine-tune job
-            if (GUILayout.Button("Create Fine-Tune"))
-            {
-                var request = new CreateFineTuneJobRequest(
-                    model: "",
-                    trainingFileId: "",
-                    hyperParameters: null,
-                    suffix: null,
-                    validationFileId: null
-                    );
-                client.FineTuningEndpoint.CreateJobAsync(request).ContinueWith(
-                    task =>
-                    {
-                        if (task.IsFaulted)
-                        {
-                            LogException(task.Exception);
-                        }
-                        else
-                        {
-                            var fineTuneJob = new FineTuneData(task.Result);
-                        }
-                    }
-                );
-            }
-
-            // List fine-tune jobs
             EditorGUILayout.BeginHorizontal();
             {
-                if (GUILayout.Button("List Fine-Tune"))
+                if (GUILayout.Button("Open Jsonl", GUILayout.Width(100)))
                 {
+                    var path = EditorUtility.OpenFilePanel("Open Jsonl", "", "jsonl");
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        using (var reader = new StreamReader(path))
+                        {
+                            // Read each line as a json file (jsonl)
+                            fineTuneDataSet.Clear();
+                            while (!reader.EndOfStream)
+                            {
+                                var line = reader.ReadLine();
+                                var dataset = JsonConvert.DeserializeObject<FineTuneDataSet>(line);
+                                fineTuneDataSet.Add(dataset);
+                            }
+                        }
+                    }
+                }
+                // Save Jsonl file
+                if (GUILayout.Button("Save Jsonl", GUILayout.Width(100)))
+                {
+                    var path = EditorUtility.SaveFilePanel("Save Jsonl", "", "fine-tune", "jsonl");
+                    if (!string.IsNullOrEmpty(path) && fineTuneDataSet != null)
+                    {
+                        using (var writer = new StreamWriter(path))
+                        {
+                            foreach (var dataset in fineTuneDataSet)
+                            {
+                                writer.WriteLine(JsonConvert.SerializeObject(dataset, Formatting.None));
+                            }
+                        }
+                    }
+                }
+                // Clear
+                if (GUILayout.Button("Clear", GUILayout.Width(100)))
+                {
+                    fineTuneDataSet.Clear();
                 }
             }
             EditorGUILayout.EndHorizontal();
+
+            fineTuneDataSetScrollPosition = EditorGUILayout.BeginScrollView(fineTuneDataSetScrollPosition);
+            {
+                // Fine-tune jsonl file editor (A list of fine-tune messages)
+
+                if (fineTuneDataSet != null)
+                {
+                    if (fineTuneDataSet.Count <= 0)
+                    {
+                    }
+                    else
+                    {
+                        var index = 0;
+                        var removeIndex = -1;
+                        var addIndex = -1;
+                        int moveFromIndex = -1, moveToIndex = -1;
+                        foreach (var fineTuneData in fineTuneDataSet)
+                        {
+                            EditorGUILayout.BeginHorizontal();
+                            {
+                                // Add data set button
+                                if (GUILayout.Button("+", GUILayout.Width(20)))
+                                {
+                                    addIndex = index;
+                                }
+                                // Remove
+                                if (GUILayout.Button("-", GUILayout.Width(20)))
+                                {
+                                    removeIndex = index;
+                                }
+                                // Move up
+                                if (GUILayout.Button("↑", GUILayout.Width(20)))
+                                {
+                                    moveFromIndex = index;
+                                    moveToIndex = index - 1;
+                                }
+                                // Move down
+                                if (GUILayout.Button("↓", GUILayout.Width(20)))
+                                {
+                                    moveFromIndex = index;
+                                    moveToIndex = index + 1;
+                                }   
+                                EditorGUILayout.LabelField($"Fine-Tune Data {index}");
+                            }
+                            EditorGUILayout.EndHorizontal();
+                            DrawFineTuneData(fineTuneData);
+                            index++;
+                        }
+                        if (removeIndex >= 0)
+                        {
+                            fineTuneDataSet.RemoveAt(removeIndex);
+                        }
+                        if (addIndex >= 0)
+                        {
+                            fineTuneDataSet.Insert(addIndex, new FineTuneDataSet());
+                        }
+                        if (moveFromIndex >= 0 && moveToIndex >= 0 && moveFromIndex < fineTuneDataSet.Count && moveToIndex < fineTuneDataSet.Count)
+                        {
+                            var temp = fineTuneDataSet[moveFromIndex];
+                            fineTuneDataSet[moveFromIndex] = fineTuneDataSet[moveToIndex];
+                            fineTuneDataSet[moveToIndex] = temp;
+                        }
+                    }
+                    if (GUILayout.Button("+"))
+                    {
+                        fineTuneDataSet.Add(new FineTuneDataSet());
+                    }
+                }
+            }
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawFineTuneList(float viewHeight = -1)
+        {
+            // Create fine-tune job
+            fineTuneModelIndex = EditorGUILayout.Popup("Model", fineTuneModelIndex, fineTuneBaseModels);
+            fineTuneModel = fineTuneBaseModels[fineTuneModelIndex];
+            fineTuneTrainingFileId = EditorGUILayout.TextField("Training File ID", fineTuneTrainingFileId);
+            fineTuneValidationFileId = EditorGUILayout.TextField("Validation File ID", fineTuneValidationFileId);
+            if (GUILayout.Button("Create Fine-Tune"))
+            {
+                CreateFineTuneJobAsync().Forget();
+            }
+            fineTuneListScrollPosition = EditorGUILayout.BeginScrollView(fineTuneListScrollPosition, GUILayout.Height(viewHeight));
+            {
+                // List fine-tune jobs
+                EditorGUILayout.BeginHorizontal();
+                {
+                    if (GUILayout.Button("List Fine-Tune"))
+                    {
+                        ListFineTuneAsync().Forget();
+                    }
+                }
+                EditorGUILayout.EndHorizontal();
+
+                foreach (var fineTuneData in fineTuneDatas)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    {
+                        EditorGUILayout.LabelField(fineTuneData.Id);
+                        EditorGUILayout.LabelField(fineTuneData.response.Status.ToString());
+                        if (fineTuneData.response.Model != null)
+                        {
+                            EditorGUILayout.LabelField(fineTuneData.response.Model);
+                        }
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void OnDrawFineTune()
+        {
+            EditorGUILayout.BeginVertical();
+            {
+                DrawFineTuneDataSet();
+
+                DrawVerticalResizer(true, ref fineTuneViewHeight, ref isDraggingBarFineTune);
+
+                DrawFineTuneList(fineTuneViewHeight);
+            }
+            EditorGUILayout.EndVertical();
         }
 
         private void DrawFineTuneData(FineTuneDataSet fineTuneDataSet)
@@ -1986,62 +2153,149 @@ namespace SS
 
             EditorGUILayout.BeginHorizontal();
             {
+                EditorGUILayout.Space(40, false);
                 EditorGUI.BeginChangeCheck();
-                EditorGUILayout.BeginVertical();
                 {
-                    FineTuneMessage removeMessage = null;
-                    if (fineTuneDataSet.messages != null)
+                    EditorGUILayout.BeginVertical();
                     {
-                        foreach (var message in fineTuneDataSet.messages)
+                        if (fineTuneDataSet.messages != null)
                         {
-                            EditorGUILayout.BeginHorizontal();
+                            int index = 0;
+                            int addIndex = -1, removeIndex = -1;
+                            int moveFromIndex = -1, moveToIndex = -1;
+
+                            foreach (var message in fineTuneDataSet.messages)
                             {
-                                if (!Enum.TryParse(message.role, ignoreCase: true, out Role role))
+                                EditorGUILayout.BeginHorizontal();
                                 {
-                                    // To lower case
-                                    role = Role.System;
-                                    message.role = role.ToString().ToLower();
-                                }
-                                var newRole = (Role)EditorGUILayout.EnumPopup(role, GUILayout.Width(100));
-                                if (newRole != role)
-                                {
-                                    message.role = newRole.ToString().ToLower();
-                                }
-                                message.content = EditorGUILayout.TextArea(message.content);
-                                if (message.weight != null)
-                                {
-                                    message.weight = EditorGUILayout.Slider((float)message.weight, 0f, 1f, GUILayout.Width(200));
-                                }
-                                else
-                                {
-                                    if (GUILayout.Button("Add Weight", GUILayout.Width(100)))
+                                    // Toolbar
+                                    if (GUILayout.Button("+", GUILayout.Width(20)))
                                     {
-                                        message.weight = 1f;
+                                        addIndex = index;
+                                    }
+                                    if (GUILayout.Button("-", GUILayout.Width(20)))
+                                    {
+                                        removeIndex = index;
+                                    }
+                                    if (GUILayout.Button("↑", GUILayout.Width(20)))
+                                    {
+                                        moveFromIndex = index;
+                                        moveToIndex = index - 1;
+                                    }
+                                    if (GUILayout.Button("↓", GUILayout.Width(20)))
+                                    {
+                                        moveFromIndex = index;
+                                        moveToIndex = index + 1;
+                                    }
+
+                                    if (!Enum.TryParse(message.role, ignoreCase: true, out Role role))
+                                    {
+                                        // To lower case
+                                        role = Role.System;
+                                        message.role = role.ToString().ToLower();
+                                    }
+                                    var newRole = (Role)EditorGUILayout.EnumPopup(role, GUILayout.Width(100));
+                                    if (newRole != role)
+                                    {
+                                        message.role = newRole.ToString().ToLower();
+                                    }
+                                    message.content = EditorGUILayout.TextArea(message.content);
+                                    if (message.weight != null)
+                                    {
+                                        message.weight = EditorGUILayout.Slider((float)message.weight, 0f, 1f, GUILayout.Width(200));
+                                        if (GUILayout.Button("Remove Weight", GUILayout.Width(100)))
+                                        {
+                                            message.weight = null;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if (GUILayout.Button("Add Weight", GUILayout.Width(200 + 100)))
+                                        {
+                                            message.weight = 1f;
+                                        }
                                     }
                                 }
-                                if (GUILayout.Button("x", GUILayout.Width(20)))
-                                {
-                                    removeMessage = message;
-                                }
+                                EditorGUILayout.EndHorizontal();
+                                index++;
                             }
-                            EditorGUILayout.EndHorizontal();
+                            if (addIndex >= 0)
+                            {
+                                fineTuneDataSet.messages.Insert(addIndex, new FineTuneMessage());
+                            }
+                            if (removeIndex >= 0)
+                            {
+                                fineTuneDataSet.messages.RemoveAt(removeIndex);
+                            }
+                            if (moveFromIndex >= 0 && moveToIndex >= 0 && moveFromIndex < fineTuneDataSet.messages.Count && moveToIndex < fineTuneDataSet.messages.Count)
+                            {
+                                var temp = fineTuneDataSet.messages[moveFromIndex];
+                                fineTuneDataSet.messages[moveFromIndex] = fineTuneDataSet.messages[moveToIndex];
+                                fineTuneDataSet.messages[moveToIndex] = temp;
+                            }
+                        }
+                        if (GUILayout.Button("+", GUILayout.Width(20)))
+                        {
+                            fineTuneDataSet.messages.Add(new FineTuneMessage());
                         }
                     }
-                    if (removeMessage != null)
-                    {
-                        fineTuneDataSet.messages.Remove(removeMessage);
-                    }
-                }
-                EditorGUILayout.EndVertical();
-                if (GUILayout.Button("Add Message", GUILayout.Width(100)))
-                {
-                    fineTuneDataSet.messages.Add(new FineTuneMessage());
+                    EditorGUILayout.EndVertical();
                 }
                 if (EditorGUI.EndChangeCheck())
                 {
                 }
             }
             EditorGUILayout.EndHorizontal();
+        }
+
+        private async Task CreateFineTuneJobAsync()
+        {
+            var request = new CreateFineTuneJobRequest(
+                model: fineTuneModel,
+                trainingFileId: fineTuneTrainingFileId,
+                hyperParameters: null,
+                suffix: null,
+                validationFileId: string.IsNullOrEmpty(fineTuneValidationFileId)? null : fineTuneValidationFileId
+                );
+            try
+            {
+                var jobResponse = await client.FineTuningEndpoint.CreateJobAsync(request);
+                fineTuneDatas.Add(new FineTuneData(jobResponse));
+            }
+            catch (Exception e)
+            {
+                LogException(e);
+            }
+        }
+
+        private async Task ListFineTuneAsync()
+        {
+            if (client == null || client.HasValidAuthentication == false)
+            {
+                LogError("Invalid client");
+                return;
+            }
+            fineTuneDatas.Clear();
+            try
+            {
+                var response = await client.FineTuningEndpoint.ListJobsAsync();
+                if (response.Items.Count <= 0)
+                {
+                    LogWarning("No fine-tune job");
+                }
+                else
+                {
+                    foreach (var job in response.Items)
+                    {
+                        fineTuneDatas.Add(new FineTuneData(job));
+                    }
+                }
+                this.Repaint();
+            }
+            catch (Exception e)
+            {
+                LogException(e);
+            }
         }
 
         #endregion
