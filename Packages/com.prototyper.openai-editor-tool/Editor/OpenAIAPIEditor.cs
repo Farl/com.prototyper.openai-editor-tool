@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEditor;
 
 using System;
+using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -1791,6 +1792,7 @@ namespace SS
             }
             bool isFileSearch = assistantData.toolHashSet.Contains("file_search");
             bool isCodeInterpreter = assistantData.toolHashSet.Contains("code_interpreter");
+
             List<Tool> tools = new List<Tool>();
             if (isFileSearch)
             {
@@ -1800,17 +1802,27 @@ namespace SS
             {
                 tools.Add(new Tool(Tool.CodeInterpreter));
             }
+
             FileSearchResources fileSearchResources = null;
             CodeInterpreterResources codeInterpreterResources = null;
             if (isFileSearch)
             {
                 fileSearchResources = new FileSearchResources(vectorStoreId: assistantData.vectorStoreId);
             }
+            else
+            {
+                fileSearchResources = new FileSearchResources();
+                // Call private setter of VectorStoreIds
+                var setVSIds = typeof(FileSearchResources).GetProperty("VectorStoreIds", BindingFlags.Public | BindingFlags.Instance);
+                setVSIds.SetValue(fileSearchResources, new List<string>());
+            }
             if (isCodeInterpreter)
             {
                 //codeInterpreterResources = new CodeInterpreterResources(fileId: null)
             }
+
             ToolResources toolResoures = new ToolResources(codeInterpreterResources, fileSearchResources);
+
             var request = new CreateAssistantRequest(
                             name: assistantData.Name,
                             description: assistantData.Description,
@@ -1825,6 +1837,7 @@ namespace SS
             {
                 var response = await client.AssistantsEndpoint.ModifyAssistantAsync(assistantData.Id, request, cancellationToken);
                 assistantData.response = response;
+                this.Repaint();
                 return;
             }
             catch (Exception e)
